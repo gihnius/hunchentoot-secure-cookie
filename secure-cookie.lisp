@@ -7,47 +7,74 @@
 ;;;;
 
 (defpackage :hunchentoot-secure-cookie
-  (:use :cl :hunchentoot)
+  (:use :cl :hunchentoot :cl-ppcre)
   ;; not sure why the class symbol cookie not to be exported from the package of hunchentoot.
   (:import-from :hunchentoot :cookie)
   (:export :*cookie-secret-token*
-           :set-secure-cookie))
+           :*cookie-secret-cipher-key*
+           :set-secure-cookie
+           :get-secure-cookie
+           :delete-secure-cookie))
 
 (in-package :hunchentoot-secure-cookie)
 
 (defclass secure-cookie (cookie)
   ())
 
-;; Need to set this token in order to do encryption/decryption
+;; Need to set this token(ascii string) in order to do encryption/decryption
 (defvar *cookie-secret-token* ""
-  "The secret token to make cipher for encryption/decryption")
+  "REQUIRED: The secret token(ascii string) to make hash for encryption/decryption")
+
+(defvar *cookie-secret-cipher-key* nil)
+;; OPTIONAL: The key to make (AES) cipher, accept 16/24/32 ascii characters length.
+(defvar *default-key* (hunchentoot::create-random-string 16))
+
+(defun register-key ()
+  (let (key)
+    (if *cookie-secret-cipher-key*
+        (let ((len (length *cookie-secret-cipher-key*)))
+          (cond
+            ((>= len 32) (setq key (subseq *cookie-secret-cipher-key* 0 32)))
+            ((>= len 24) (setq key (subseq *cookie-secret-cipher-key* 0 24)))
+            ((>= len 16) (setq key (subseq *cookie-secret-cipher-key* 0 16)))
+            (t (setq key *default-key*))))
+        (setq key *default-key*))
+    key))
 
 (defun secure-cookie-p ()
   "Encrypt cookie if token is set"
   (> (length *cookie-secret-token*) 0))
 
-(defun get-cipher (key)
-  (ironclad:make-cipher :blowfish :mode :ecb :key (ironclad:ascii-string-to-byte-array key)))
+(defun get-cipher ()
+  (ironclad:make-cipher 'ironclad:aes :key (ironclad:ascii-string-to-byte-array (register-key)) :mode 'ironclad:cbc :initialization-vector (make-array (ironclad:block-length 'ironclad:aes) :initial-element 0 :element-type '(unsigned-byte 8))))
 
-(defun encrypt-and-encode (plain-string key)
-  (let ((cipher (get-cipher key))
-        (msg (babel:string-to-octets plain-string)))
+(defun encrypt-and-encode (plain-string)
+  (let ((cipher (get-cipher))
+        (msg (flexi-streams:string-to-octets plain-string :external-format :utf-8)))
     (ironclad:encrypt-in-place cipher msg)
-    (cl-base64:string-to-base64-string (ironclad:byte-array-to-hex-string msg))))
+    (cl-base64:usb8-array-to-base64-string msg)))
 
-(defun decode-and-decrypt (encoded-string key)
-  (let ((cipher (get-cipher key))
-        (msg (ironclad:hex-string-to-byte-array (cl-base64:base64-string-to-string encoded-string))))
+(defun decode-and-decrypt (encoded-string)
+  (let ((cipher (get-cipher))
+        (msg (cl-base64:base64-string-to-usb8-array encoded-string)))
     (ironclad:decrypt-in-place cipher msg)
-    (babel:octets-to-string msg)))
+    (flexi-streams:octets-to-string msg :external-format :utf-8)))
+
+(defun pack-cookie-value (val)
+  (format nil "~A|~A"
+          (cl-base64:usb8-array-to-base64-string (flexi-streams:string-to-octets val :external-format :utf-8))
+          (cl-base64:string-to-base64-string *cookie-secret-token*)))
+
+(defun unpack-cookie-value (val)
+  (flexi-streams:octets-to-string (cl-base64:base64-string-to-usb8-array (car (split "\\|" val))) :external-format :utf-8))
 
 (defmethod initialize-instance :after ((cookie secure-cookie) &key)
   "Encode and Encrypt the COOKIE."
   (let ((val (cookie-value cookie)))
-    (when (and (secure-cookie-p) (> (length val) 0))
+    (when (> (length val) 0)
       ;; JS can't read the encrypted cookie, so set http-only to true by default.
       (setf (cookie-http-only cookie) t)
-      (setf (cookie-value cookie) (encrypt-and-encode val *cookie-secret-token*)))))
+      (setf (cookie-value cookie) (encrypt-and-encode (pack-cookie-value val))))))
 
 (defun set-secure-cookie (name &key (value "") expires max-age path domain secure http-only (reply *reply*) (acceptor *acceptor*))
   "set the secure cookie, works like set-cookie in hunchentoot."
@@ -55,27 +82,43 @@
   ;; it's because hard to do decryption of session-cookie outside the package of hunchentoot
   (when (string= name (session-cookie-name acceptor))
     (return-from set-secure-cookie))
-  (set-cookie* (make-instance 'secure-cookie
-                              :name name
-                              :value value
-                              :expires expires
-                              :max-age max-age
-                              :path path
-                              :domain domain
-                              :secure secure
-                              :http-only http-only)
-               reply))
+  (when (secure-cookie-p)
+    (set-cookie* (make-instance 'secure-cookie
+                                :name name
+                                :value value
+                                :expires expires
+                                :max-age max-age
+                                :path path
+                                :domain domain
+                                :secure secure
+                                :http-only http-only)
+                 reply)))
 
 (defun get-secure-cookie (name &optional (request *request*) (acceptor *acceptor*))
   "get cookie using cookie-in then decode and decrypt"
   ;; ignore session-cookie in hunchentoot
   (when (string= name (session-cookie-name acceptor))
     (return-from get-secure-cookie))
-  (let ((cookie (cookie-in name request)))
-    (when (and cookie (> (length cookie) 0))
-      (decode-and-decrypt cookie *cookie-secret-token*))))
+  (let ((cookie-value (cookie-in name request)))
+    (when (and (secure-cookie-p) cookie-value (> (length cookie-value) 0))
+      (ignore-errors
+        ;; key reset may causes (decrypt) 500 http error
+        (unpack-cookie-value (decode-and-decrypt cookie-value))))))
+
+(defun delete-secure-cookie (name)
+  (set-secure-cookie name :value ""))
+
 
 #|
+;; test
+(in-package :hunchentoot-secure-cookie)
+(setq *cookie-secret-token* "passphrase")
+;; change hash token
+(setq hunchentoot-secure-cookie:*cookie-secret-token* "passphrase")
+;; change cipher key
+(setq hunchentoot-secure-cookie:*cookie-secret-cipher-key* "1234567890123456")
+;; start server
+(hunchentoot:start (make-instance 'hunchentoot:easy-acceptor :port 4242))
 ;; visit http://localhost:4242/cookie?value=this cookie value
 (hunchentoot:define-easy-handler (cookie :uri "/cookie") (value)
   (setf (hunchentoot:content-type*) "text/plain")
