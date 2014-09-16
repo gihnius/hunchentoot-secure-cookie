@@ -54,6 +54,7 @@
 
 ;; *hkey* bind only once
 ;; in a running session, if *hkey* reset, cookies from client will not be verified by HMAC.
+;; TODO: reset *hkey* when token changed
 (defun crypto-init (&optional reset-hkey)
   (when (secure-cookie-p)
     (multiple-value-bind (s h) (register-key *cookie-secret-key-base*)
@@ -151,7 +152,7 @@
 (hunchentoot-secure-cookie:set-cookie-secret-key-base "password")
 ;; start server
 (hunchentoot:start (make-instance 'hunchentoot:easy-acceptor :port 4242))
-;; visit http://localhost:4242/cookie?value=this cookie value
+;; visit http://localhost:4242/set?value=this
 (hunchentoot:define-easy-handler (set-cookie-val :uri "/set") (value)
   (setf (hunchentoot:content-type*) "text/plain")
   (hunchentoot-secure-cookie:set-secure-cookie "secure-cookie" :value (if value value ""))
