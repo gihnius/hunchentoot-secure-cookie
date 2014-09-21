@@ -4,7 +4,7 @@
                #:hunchentoot
                #:cl-base64
                #:ironclad
-               #:flexi-streams)
+               #:babel)
   :components ((:file "secure-cookie")))
 
 (asdf:defsystem #:hunchentoot-secure-cookie-test

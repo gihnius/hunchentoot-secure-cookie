@@ -22,6 +22,7 @@
 ;; Need to set this key (string) in order to do encryption/decryption
 (defvar *cookie-secret-key-base* ""
   "REQUIRED: The cookie token(string) to make hash for encryption/decryption")
+(defvar *old-key-base* "")
 
 (defun secure-cookie-p ()
   "Encrypt cookie if token is set"
@@ -43,27 +44,29 @@
      (subseq digest 0 32)
      (subseq digest 32 64))))
 
+;; generate random IV: http://en.wikipedia.org/wiki/Initialization_vector
 (defun generate_iv ()
   (ironclad:make-random-salt (ironclad:block-length 'ironclad:aes)))
 
-;; use AES-CBC cipher default
+;; use AES-CBC-256 cipher default
 ;; return: cipher
 ;; key: the encrypt-key (bytes array)
 (defun get-cipher (key iv)
   (ironclad:make-cipher 'ironclad:aes :key key :mode 'ironclad:cbc :initialization-vector iv))
 
-;; *hkey* bind only once
+;; bind *hkey* only once
 ;; in a running session, if *hkey* reset, cookies from client will not be verified by HMAC.
-;; TODO: reset *hkey* when token changed
 (defun crypto-init (&optional reset-hkey)
   (when (secure-cookie-p)
     (multiple-value-bind (s h) (register-key *cookie-secret-key-base*)
       (setq *skey* s)
-      (if (or reset-hkey (not *hkey*))
+      (if (or reset-hkey (not *hkey*) (not (string= *old-key-base* *cookie-secret-key-base*)))
           (setq *hkey* h)))))
 
+;; the interface to init or change the secret key token.
 (defun set-cookie-secret-key-base (key &optional reset-hkey)
   "change or init the *cookie-secret-key-base* value"
+  (setq *old-key-base* *cookie-secret-key-base*)
   (setq *cookie-secret-key-base* key)
   (crypto-init reset-hkey))
 
@@ -82,10 +85,14 @@
     (format nil "~A|~A" (subseq pack (1+ name-len)) mac-str)))
 
 ;; => "date|value|mac"
+;; make sure return the right format
+;; restore | by: base64-string -> string
 (defun unpack-cookie (val)
-  (let* ((orig (cl-base64:base64-string-to-string val))
-         (list (split "\\|" orig)))
-    (values-list list)))
+  (let* ((dec (cl-base64:base64-string-to-string val))
+         (list (split "\\|" dec)))
+    (if (and list (eql (length list) 3))
+        (values-list list)
+        (values "" "" ""))))
 
 ;; name: cookie-name (string)
 ;; value: cookie-value (string)
@@ -93,13 +100,14 @@
 (defun encrypt-and-encode (name value)
   (let ((mac (ironclad:make-hmac *hkey* 'ironclad:SHA256))
         (iv (generate_iv))
-        (content (flexi-streams:string-to-octets value :external-format :utf-8)))
+        (content (babel:string-to-octets value :encoding :utf-8 )))
     (ironclad:encrypt-in-place (get-cipher *skey* iv) content)
     (let* ((new-content (concatenate 'vector iv content)) ; include the IV
            (pack (pack-cookie name new-content)))
-      (ironclad:update-hmac mac (flexi-streams:string-to-octets pack :external-format :utf-8))
+      (ironclad:update-hmac mac (babel:string-to-octets pack :encoding :utf-8))
       (cl-base64:string-to-base64-string (pack-signature name pack (ironclad:hmac-digest mac))))))
 
+;; return nil if failed to decrypt/decode/hmac-verify
 (defun decode-and-decrypt (name value)
   (multiple-value-bind (ts content hmac) (unpack-cookie value) ; "date|value|mac"
     (let* ((mac (ironclad:make-hmac *hkey* 'ironclad:SHA256))
@@ -109,7 +117,7 @@
                               content)) ; "name|date|value"
            (back-hmac-digest (cl-base64:base64-string-to-usb8-array hmac)))
       ;; Verify hmac
-      (ironclad:update-hmac mac (flexi-streams:string-to-octets back-pack :external-format :utf-8))
+      (ironclad:update-hmac mac (babel:string-to-octets back-pack :encoding :utf-8))
       ;; TODO: also check the ts (get-universal-time) format
       (when (equalp back-hmac-digest (ironclad:hmac-digest mac))
         ;; extract the iv and decrypt
@@ -117,15 +125,16 @@
                (iv (subseq data 0 (ironclad:block-length 'ironclad:aes)))
                (val (subseq data (ironclad:block-length 'ironclad:aes))))
           (ironclad:decrypt-in-place (get-cipher *skey* iv) val)
-          (flexi-streams:octets-to-string val :external-format :utf-8))))))
+          (babel:octets-to-string val :encoding :utf-8))))))
 
 ;; set http-only to true in SECURE COOKIE
-(defun set-secure-cookie (name &key (value "") expires max-age path domain secure (http-only t) (reply *reply*))
+(defun set-secure-cookie (name &key (value "") max-age expires path domain secure (http-only t) (reply *reply*))
   "set the secure cookie, works like set-cookie in hunchentoot."
   (when (secure-cookie-p)
     (set-cookie* (make-instance 'cookie
                                 :name name
-                                :value (encrypt-and-encode name value)
+                                :value (handler-case (encrypt-and-encode name value)
+                                         (condition (c) (log-message* :warning "Error when encrypting or encoding cookie value! ~S" c)))
                                 :expires expires
                                 :max-age max-age
                                 :path path
@@ -135,32 +144,12 @@
                  reply)))
 
 (defun get-secure-cookie (name &optional (request *request*))
-  "get cookie using cookie-in then decode and decrypt"
+  "get cookie using cookie-in then decode and decrypt, return NIL if failed."
   (let ((cookie-value (cookie-in name request)))
     (when (and (secure-cookie-p) cookie-value (> (length cookie-value) 0))
-      (decode-and-decrypt name cookie-value))))
+      (handler-case
+          (decode-and-decrypt name cookie-value)
+        (condition (c) (log-message* :warning "Error when decoding or decrypting cookie value! ~S" c))))))
 
 (defun delete-secure-cookie (name)
   (set-secure-cookie name :value ""))
-
-
-#|
-
-;; test
-(in-package :hunchentoot-secure-cookie)
-;; set or change the key
-(hunchentoot-secure-cookie:set-cookie-secret-key-base "password")
-;; start server
-(hunchentoot:start (make-instance 'hunchentoot:easy-acceptor :port 4242))
-;; visit http://localhost:4242/set?value=this
-(hunchentoot:define-easy-handler (set-cookie-val :uri "/set") (value)
-  (setf (hunchentoot:content-type*) "text/plain")
-  (hunchentoot-secure-cookie:set-secure-cookie "secure-cookie" :value (if value value ""))
-  (format nil "You set cookie: ~A" value))
-(hunchentoot:define-easy-handler (get-cookie-val :uri "/get") ()
-  (setf (hunchentoot:content-type*) "text/plain")
-  (format nil "secure-cookie: ~A~&original encoded cookie: ~A"
-          (hunchentoot-secure-cookie::get-secure-cookie "secure-cookie")
-          (Hunchentoot:cookie-in "secure-cookie")))
-
-|#
