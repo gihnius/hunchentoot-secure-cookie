@@ -7,7 +7,7 @@
                #:babel)
   :components ((:file "secure-cookie")))
 
-(asdf:defsystem #:hunchentoot-secure-cookie-test
+(asdf:defsystem #:hunchentoot-secure-cookie.tests
   :serial t
-  :depends-on (#:drakma #:hunchentoot-secure-cookie #:rt)
+  :depends-on (#:drakma #:hunchentoot-secure-cookie #:lisp-unit)
   :components ((:file "tests")))
