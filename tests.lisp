@@ -7,7 +7,7 @@
 
 (defun cookie-tests-prepare ()
   (hunchentoot:start *ht-acceptor*)
-  (hunchentoot-secure-cookie:set-cookie-secret-key-base "passphrase")
+  (hunchentoot-secure-cookie:set-secret-key-base "passphrase")
 
   (hunchentoot:define-easy-handler (set-cookie-val :uri "/set") (value)
     (setf (hunchentoot:content-type*) "text/plain")

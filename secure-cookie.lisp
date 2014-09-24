@@ -12,7 +12,7 @@
   (:use #:cl #:hunchentoot #:cl-ppcre)
   ;; not sure why the class symbol cookie not to be exported from the package of hunchentoot.
   (:import-from #:hunchentoot #:cookie)
-  (:export #:set-cookie-secret-key-base
+  (:export #:set-secret-key-base
            #:*random-key*
            #:set-secure-cookie
            #:get-secure-cookie
@@ -73,7 +73,7 @@
           (setq *hkey* h)))))
 
 ;; the interface to init or change the secret key token.
-(defun set-cookie-secret-key-base (key &optional reset-hkey)
+(defun set-secret-key-base (key &optional reset-hkey)
   "change or init the *cookie-secret-key-base* value"
   (setq *old-key-base* *cookie-secret-key-base*)
   (setq *cookie-secret-key-base* key)
@@ -143,7 +143,7 @@
     (set-cookie* (make-instance 'cookie
                                 :name name
                                 :value (handler-case (encrypt-and-encode name value)
-                                         (condition (c) (log-message* :warning "Error when encrypting or encoding cookie value! ~S" c)))
+                                         (condition (c) (log-message* :warning "Failed to encode or encrypt cookie value! ~S" c)))
                                 :expires expires
                                 :max-age max-age
                                 :path path
@@ -158,7 +158,7 @@
     (when (and (secure-cookie-p) cookie-value (> (length cookie-value) 0))
       (handler-case
           (decode-and-decrypt name cookie-value)
-        (condition (c) (log-message* :warning "Error when decoding or decrypting cookie value! ~S" c))))))
+        (condition (c) (log-message* :warning "Failed to decode or decrypt cookie value! ~S" c))))))
 
 (defun delete-secure-cookie (name)
   (set-secure-cookie name :value ""))
