@@ -8,15 +8,15 @@
 ;;;; secure-cookie: encodes and decodes authenticated and optionally encrypted cookie values
 ;;;;
 
-(defpackage :hunchentoot-secure-cookie
-  (:use :cl :hunchentoot :cl-ppcre)
+(defpackage #:hunchentoot-secure-cookie
+  (:use #:cl #:hunchentoot #:cl-ppcre)
   ;; not sure why the class symbol cookie not to be exported from the package of hunchentoot.
-  (:import-from :hunchentoot :cookie)
-  (:export :set-cookie-secret-key-base
-           :*random-key*
-           :set-secure-cookie
-           :get-secure-cookie
-           :delete-secure-cookie))
+  (:import-from #:hunchentoot #:cookie)
+  (:export #:set-cookie-secret-key-base
+           #:*random-key*
+           #:set-secure-cookie
+           #:get-secure-cookie
+           #:delete-secure-cookie))
 
 (in-package :hunchentoot-secure-cookie)
 
@@ -28,6 +28,7 @@
 ;; generate random encrypt key every time
 ;; but can't verify cookies every time the server app restart.
 ;; default is nil/false
+;; to enhance security, you can set it to t/true
 (defvar *random-key* nil)
 
 (defun secure-cookie-p ()
@@ -45,8 +46,9 @@
 ;; use ironclad:pbkdf2-hash-password instead
 (defun register-key (passphrase)
   (let* ((kdf (ironclad:make-kdf 'ironclad:pbkdf2 :digest 'ironclad:sha256))
-         (salt (if *random-key* (ironclad:make-random-salt 32) (ironclad:ascii-string-to-byte-array passphrase)))
-         (digest (ironclad:derive-key kdf (ironclad:ascii-string-to-byte-array passphrase) salt 1 64)))
+         (pass (ironclad:ascii-string-to-byte-array passphrase))
+         (salt (if *random-key* (ironclad:make-random-salt 32) pass))
+         (digest (ironclad:derive-key kdf pass salt 1 64)))
     (values
      (subseq digest 0 32)
      (subseq digest 32 64))))
