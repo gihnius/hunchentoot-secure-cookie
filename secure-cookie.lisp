@@ -140,17 +140,18 @@
 (defun set-secure-cookie (name &key (value "") max-age expires path domain secure (http-only t) (reply *reply*))
   "set the secure cookie, works like set-cookie in hunchentoot."
   (when (secure-cookie-p)
-    (set-cookie* (make-instance 'cookie
-                                :name name
-                                :value (handler-case (encrypt-and-encode name value)
-                                         (condition (c) (log-message* :warning "Failed to encode or encrypt cookie value! ~S" c)))
-                                :expires expires
-                                :max-age max-age
-                                :path path
-                                :domain domain
-                                :secure secure
-                                :http-only http-only)
-                 reply)))
+    (let ((val (handler-case (encrypt-and-encode name value)
+                 (condition (c) (values nil (log-message* :warning "Failed to encode or encrypt cookie value! ~S" c))))))
+      (set-cookie* (make-instance 'cookie
+                                  :name name
+                                  :value val
+                                  :expires expires
+                                  :max-age max-age
+                                  :path path
+                                  :domain domain
+                                  :secure secure
+                                  :http-only http-only)
+                   reply))))
 
 (defun get-secure-cookie (name &optional (request *request*))
   "get cookie using cookie-in then decode and decrypt, return NIL if failed."
@@ -158,7 +159,7 @@
     (when (and (secure-cookie-p) cookie-value (> (length cookie-value) 0))
       (handler-case
           (decode-and-decrypt name cookie-value)
-        (condition (c) (log-message* :warning "Failed to decode or decrypt cookie value! ~S" c))))))
+        (condition (c) (values nil (log-message* :warning "Failed to decode or decrypt cookie value! ~S" c)))))))
 
 (defun delete-secure-cookie (name)
   (set-secure-cookie name :value ""))
