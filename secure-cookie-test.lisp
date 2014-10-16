@@ -1,7 +1,4 @@
-(defpackage :hunchentoot-secure-cookie.tests
-  (:use :cl :hunchentoot :cl-ppcre :hunchentoot-secure-cookie :lisp-unit))
-
-(in-package :hunchentoot-secure-cookie.tests)
+;; TODO
 
 (defparameter *ht-acceptor* (make-instance 'hunchentoot:easy-acceptor :port 4343))
 

@@ -8,7 +8,7 @@ Secure cookies can't be forged, because their values are validated using HMAC. W
 
 if using ASDF-2, you can install it to to the ASDF-2 load dir:
 
-```
+``` shell
 
 cd ~/.local/share/common-lisp/source/
 
@@ -24,14 +24,14 @@ Github: https://github.com/gihnius/hunchentoot-secure-cookie
 
 API:
 
-```
-hunchentoot-secure-cookie:set-cookie-secret-key-base
-hunchentoot-secure-cookie:set-secure-cookie
-hunchentoot-secure-cookie:get-secure-cookie
-hunchentoot-secure-cookie:delete-secure-cookie
+``` lisp
+; hunchentoot-secure-cookie:set-secret-key-base
+; hunchentoot-secure-cookie:set-secure-cookie
+; hunchentoot-secure-cookie:get-secure-cookie
+; hunchentoot-secure-cookie:delete-secure-cookie
 
-;; init the secret key, it is recommended to use a key with 32 or 64 bytes.
-(set-cookie-secret-key-base "................")
+;; init the secret key, it is recommended to use a key with at least 30 characters
+(set-secret-key-base "................")
 
 ;; set a cookie value
 (set-secure-cookie "cookie-name" :value "something secret...")
@@ -51,7 +51,7 @@ hunchentoot-secure-cookie:delete-secure-cookie
 
 Example:
 
-```
+``` lisp
 
 ;; your app define
 (asdf:defsystem #:my-web-app
@@ -62,7 +62,7 @@ Example:
                ...))
 
 ;; set the secret token some where
-(hunchentoot-secure-cookie:set-cookie-secret-key-base "passphrase...")
+(hunchentoot-secure-cookie:set-secret-key-base "passphrase...")
 
 ;; start hunchentoot server
 (hunchentoot:start (make-instance 'hunchentoot:easy-acceptor :port 4242))
@@ -71,13 +71,16 @@ Example:
 (hunchentoot:define-easy-handler (set-cookie-val :uri "/set") (value)
   (setf (hunchentoot:content-type*) "text/plain")
   (hunchentoot-secure-cookie:set-secure-cookie "secure-cookie" :value (if value value ""))
+  (hunchentoot:set-cookie "unsecure-cookie" :value "test value")
   (format nil "You set cookie: ~A" value))
 
 (hunchentoot:define-easy-handler (get-cookie-val :uri "/get") ()
   (setf (hunchentoot:content-type*) "text/plain")
-  (format nil "secure-cookie: ~A~&original encoded cookie: ~A"
-          (hunchentoot-secure-cookie::get-secure-cookie "secure-cookie")
-          (Hunchentoot:cookie-in "secure-cookie")))
+  (format nil "secure-cookie: ~A~&original encoded cookie: ~A~&unsecure-cookie: ~A~&unsecure-as-secure: ~A"
+          (hunchentoot-secure-cookie:get-secure-cookie "secure-cookie")
+          (Hunchentoot:cookie-in "secure-cookie")
+          (hunchentoot:cookie-in "unsecure-cookie")
+          (hunchentoot-secure-cookie:get-secure-cookie "unsecure-cookie")))
 
 ;; test set cookie:
 ;; visit http://localhost:4242/set?value=this
@@ -93,3 +96,7 @@ Example:
 In hunchentoot, the built in session stores values in memory and keep the session id by cookie or QueryString, but it's hard to make the builtin session store on the hunchentoot-secure-cookie outside the package of hunchentoot.
 
 * Error handling
+
+* Testing
+
+* add documentation

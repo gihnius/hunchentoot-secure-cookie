@@ -1,7 +1,7 @@
 ;;;; secure-cookie lisp
 ;;;;
 ;;;; This file is part of the hunchentoot-secure-cookie library, released under MIT.
-;;;; See file README.org for details.
+;;;; See file README.md for details.
 ;;;;
 ;;;; Author: Gihnius lyj <gihnius@gmail.com>
 ;;;;
@@ -13,47 +13,68 @@
   ;; not sure why the class symbol cookie not to be exported from the package of hunchentoot.
   (:import-from #:hunchentoot #:cookie)
   (:export #:set-secret-key-base
-           #:*random-key*
+           #:set-encrypt-salt
+           #:set-sign-salt
+           #:set-random-key-p
            #:set-secure-cookie
            #:get-secure-cookie
            #:delete-secure-cookie))
 
 (in-package :hunchentoot-secure-cookie)
 
-;; Need to set this key (string) in order to do encryption/decryption
-(defvar *cookie-secret-key-base* ""
-  "REQUIRED: The cookie token(string) to make hash for encryption/decryption")
-(defvar *old-key-base* "")
+;; crypto configure
+(let ((@secret-key-base "")
+      (@encrypt-key nil)
+      (@sign-key nil)
+      (@encrypt-salt "encrypted cookie")
+      (@sign-salt "signed cookie")
+      (@random-key-p nil))
+  (defun gen-key (salt)
+    (ironclad:pbkdf2-hash-password
+     (babel:string-to-octets @secret-key-base :encoding :utf-8)
+     :salt (if @random-key-p
+               (ironclad:make-random-salt 64)
+               (babel:string-to-octets salt :encoding :utf-8))
+     :digest 'ironclad:sha256
+     :iterations 1000))
 
-;; generate random encrypt key every time
-;; but can't verify cookies every time the server app restart.
-;; default is nil/false
-;; to enhance security, you can set it to t/true
-(defvar *random-key* nil)
+  (defun register-keys ()
+    (setf @encrypt-key (gen-key @encrypt-salt))
+    (setf @sign-key (gen-key @sign-salt)))
 
-(defun secure-cookie-p ()
-  "Encrypt cookie if token is set"
-  (> (length *cookie-secret-key-base*) 0))
+  (defun encrypt-key ()
+    @encrypt-key)
 
-(defvar *hkey* nil
-  "Hmac hash key")
-(defvar *skey* nil
-  "AES encrypt key")
+  (defun sign-key ()
+    @sign-key)
 
-;; create random cipher key
-;; return: (encrypt-key hmac-key)
-;; passphrase: use *cookie-secret-key-base* (string)
-;; use ironclad:pbkdf2-hash-password instead
-(defun register-key (passphrase)
-  (let* ((kdf (ironclad:make-kdf 'ironclad:pbkdf2 :digest 'ironclad:sha256))
-         (pass (ironclad:ascii-string-to-byte-array passphrase))
-         (salt (if *random-key* (ironclad:make-random-salt 32) pass))
-         (digest (ironclad:derive-key kdf pass salt 1 64)))
-    (values
-     (subseq digest 0 32)
-     (subseq digest 32 64))))
+  (defun secure-cookie-p ()
+    "Encrypt cookie if token is set"
+    (and (> (length @secret-key-base) 0)
+         @encrypt-key
+         @sign-key
+         t))
 
-;; generate random IV: http://en.wikipedia.org/wiki/Initialization_vector
+  ;; the interface to init or change the secret key token.
+  (defun set-secret-key-base (key)
+    "change or init the secret-key-base value(string)"
+    (setq @secret-key-base key)
+    (register-keys))
+
+  (defun set-encrypt-salt (salt)
+    (setf @encrypt-salt salt)
+    (register-keys))
+
+  (defun set-sign-salt (salt)
+    (setf @sign-salt salt)
+    (register-keys))
+
+  (defun set-random-key-p (p)
+    (setf @random-key-p (not (not p)))
+    (register-keys)))
+;; end crypto configure
+
+;; generate random IV
 (defun generate_iv ()
   (ironclad:make-random-salt (ironclad:block-length 'ironclad:aes)))
 
@@ -62,22 +83,6 @@
 ;; key: the encrypt-key (bytes array)
 (defun get-cipher (key iv)
   (ironclad:make-cipher 'ironclad:aes :key key :mode 'ironclad:cbc :initialization-vector iv))
-
-;; bind *hkey* only once
-;; in a running session, if *hkey* reset, cookies from client will not be verified by HMAC.
-(defun crypto-init (&optional reset-hkey)
-  (when (secure-cookie-p)
-    (multiple-value-bind (s h) (register-key *cookie-secret-key-base*)
-      (setq *skey* s)
-      (if (or reset-hkey (not *hkey*) (not (string= *old-key-base* *cookie-secret-key-base*)))
-          (setq *hkey* h)))))
-
-;; the interface to init or change the secret key token.
-(defun set-secret-key-base (key &optional reset-hkey)
-  "change or init the *cookie-secret-key-base* value"
-  (setq *old-key-base* *cookie-secret-key-base*)
-  (setq *cookie-secret-key-base* key)
-  (crypto-init reset-hkey))
 
 ;; base64 encode before concatenate
 (defun pack-cookie (name encrypted-value)
@@ -107,10 +112,10 @@
 ;; value: cookie-value (string)
 ;; return base64 of encrypted value of "data|value|mac"
 (defun encrypt-and-encode (name value)
-  (let ((mac (ironclad:make-hmac *hkey* 'ironclad:SHA256))
+  (let ((mac (ironclad:make-hmac (sign-key) 'ironclad:SHA256))
         (iv (generate_iv))
         (content (babel:string-to-octets value :encoding :utf-8 )))
-    (ironclad:encrypt-in-place (get-cipher *skey* iv) content)
+    (ironclad:encrypt-in-place (get-cipher (encrypt-key) iv) content)
     (let* ((new-content (concatenate 'vector iv content)) ; include the IV
            (pack (pack-cookie name new-content)))
       (ironclad:update-hmac mac (babel:string-to-octets pack :encoding :utf-8))
@@ -119,7 +124,7 @@
 ;; return nil if failed to decrypt/decode/hmac-verify
 (defun decode-and-decrypt (name value)
   (multiple-value-bind (ts content hmac) (unpack-cookie value) ; "date|value|mac"
-    (let* ((mac (ironclad:make-hmac *hkey* 'ironclad:SHA256))
+    (let* ((mac (ironclad:make-hmac (sign-key) 'ironclad:SHA256))
            (back-pack (format nil "~A|~A|~A"
                               (cl-base64:string-to-base64-string name)
                               ts
@@ -133,7 +138,7 @@
         (let* ((data (cl-base64:base64-string-to-usb8-array content))
                (iv (subseq data 0 (ironclad:block-length 'ironclad:aes)))
                (val (subseq data (ironclad:block-length 'ironclad:aes))))
-          (ironclad:decrypt-in-place (get-cipher *skey* iv) val)
+          (ironclad:decrypt-in-place (get-cipher (encrypt-key) iv) val)
           (babel:octets-to-string val :encoding :utf-8))))))
 
 ;; set http-only to true in SECURE COOKIE
